@@ -90,6 +90,10 @@ function emitUser(userId) {
 function emitAdmins() {
   io.to('admins').emit('admin:changed');
 }
+// Notifica a TODOS que el ranking / apuestas ganadas pueden haber cambiado
+function emitFeed() {
+  io.emit('feed:changed');
+}
 
 /* ------------------------------ Auth API ------------------------------ */
 
@@ -387,6 +391,7 @@ app.post('/api/wagers', auth, (req, res) => {
   db.persist();
   emitUser(req.user.id);
   emitAdmins();
+  emitFeed();
   res.json({ wager: publicWager(wager), chips: req.user.chips });
 });
 
@@ -404,6 +409,42 @@ app.get('/api/wagers', auth, adminOnly, (req, res) => {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map((w) => ({ ...publicWager(w), username: findUser(w.userId)?.username || '?' }));
   res.json({ wagers: all });
+});
+
+// Ranking de jugadores por saldo (de mayor a menor). NO incluye a la casa/admin.
+app.get('/api/ranking', auth, (req, res) => {
+  const players = db.data.users
+    .filter((u) => u.role !== 'admin')
+    .map((u) => {
+      const wagers = db.data.wagers.filter((w) => w.userId === u.id);
+      const wonWagers = wagers.filter((w) => w.status === 'won');
+      const profit = round2(
+        wagers.reduce(
+          (a, w) =>
+            a + (w.status === 'won' ? w.payout - w.stake : w.status === 'lost' ? -w.stake : 0),
+          0
+        )
+      );
+      return {
+        id: u.id,
+        username: u.username,
+        chips: round2(u.chips),
+        wonCount: wonWagers.length,
+        wagerCount: wagers.length,
+        profit,
+      };
+    })
+    .sort((a, b) => b.chips - a.chips);
+  res.json({ ranking: players });
+});
+
+// Apuestas GANADAS de todos los jugadores (solo las ganadas), más recientes primero.
+app.get('/api/wins', auth, (req, res) => {
+  const wins = db.data.wagers
+    .filter((w) => w.status === 'won')
+    .sort((a, b) => new Date(b.settledAt || b.createdAt) - new Date(a.settledAt || a.createdAt))
+    .map((w) => ({ ...publicWager(w), username: findUser(w.userId)?.username || '?' }));
+  res.json({ wins });
 });
 
 /* ------------------------- Liquidación de apuestas -------------------- */
@@ -454,6 +495,7 @@ function resettleAll() {
   }
   db.persist();
   emitAdmins();
+  emitFeed();
 }
 
 /* ------------------------------ Users API ----------------------------- */
@@ -480,6 +522,7 @@ app.post('/api/users/:id/chips', auth, adminOnly, (req, res) => {
   db.persist();
   emitUser(user.id);
   emitAdmins();
+  emitFeed();
   res.json({ user: publicUser(user) });
 });
 

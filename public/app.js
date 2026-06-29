@@ -13,6 +13,8 @@ const state = {
   myWagers: [],
   allWagers: [],
   players: [],
+  ranking: [],
+  wins: [],
   slip: [], // [{betId, optionId, betTitle, optionLabel, odds}]
   stake: '',
   authMode: 'login', // login | register
@@ -96,6 +98,11 @@ function connectSocket() {
       loadAllWagers();
     }
   });
+  // Ranking y apuestas ganadas: cambian para todos cuando alguien apuesta o se liquida
+  socket.on('feed:changed', () => {
+    loadRanking();
+    loadWins();
+  });
 }
 
 /* --------------------------- Carga datos ------------------------- */
@@ -140,6 +147,20 @@ async function loadAllWagers() {
     render();
   } catch {}
 }
+async function loadRanking() {
+  try {
+    const { ranking } = await api('/ranking');
+    state.ranking = ranking;
+    render();
+  } catch {}
+}
+async function loadWins() {
+  try {
+    const { wins } = await api('/wins');
+    state.wins = wins;
+    render();
+  } catch {}
+}
 
 async function bootstrap() {
   if (!state.token) {
@@ -152,7 +173,7 @@ async function bootstrap() {
     state.user = user;
     state.loading = false;
     connectSocket();
-    await Promise.all([loadBets(), loadMyWagers()]);
+    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins()]);
     if (user.role === 'admin') await Promise.all([loadPlayers(), loadAllWagers()]);
     render();
   } catch {
@@ -178,7 +199,7 @@ async function handleAuth(e) {
     localStorage.setItem('gb_token', token);
     state.view = user.role === 'admin' ? 'manage' : 'bets';
     connectSocket();
-    await Promise.all([loadBets(), loadMyWagers()]);
+    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins()]);
     if (user.role === 'admin') await Promise.all([loadPlayers(), loadAllWagers()]);
     toast(`¡Bienvenido, ${user.username}!`, user.role === 'admin' ? 'gold' : '');
     render();
@@ -448,12 +469,16 @@ function renderApp() {
         ['manage', 'Gestionar', state.bets.length],
         ['new', 'Crear apuesta', null],
         ['players', 'Jugadores', state.players.length],
+        ['ranking', 'Ranking', state.ranking.length],
+        ['wins', 'Ganadas', state.wins.length],
         ['bets', 'Apuestas', null],
         ['mybets', 'Mis apuestas', state.myWagers.length],
       ]
     : [
         ['bets', 'Apuestas', state.bets.filter((b) => b.status === 'open').length],
         ['mybets', 'Mis apuestas', state.myWagers.length],
+        ['ranking', 'Ranking', state.ranking.length],
+        ['wins', 'Ganadas', state.wins.length],
       ];
 
   $app.innerHTML = `
@@ -500,6 +525,8 @@ function renderApp() {
   else if (state.view === 'new') renderNewBet(view);
   else if (state.view === 'manage') renderManage(view);
   else if (state.view === 'players') renderPlayers(view);
+  else if (state.view === 'ranking') renderRanking(view);
+  else if (state.view === 'wins') renderWins(view);
 }
 
 /* --------------------- Vista: apostar (jugador) ------------------ */
@@ -1052,6 +1079,90 @@ function renderPlayers(root) {
       chipsModal(p);
     })
   );
+}
+
+/* ---------------------- Vista: ranking --------------------------- */
+function renderRanking(root) {
+  const r = state.ranking;
+  const medals = ['🥇', '🥈', '🥉'];
+  const leader = r[0];
+  root.innerHTML = `
+    <div class="section-title">Clasificación por saldo</div>
+    ${
+      r.length
+        ? `<div class="card card-pad" style="overflow-x:auto">
+        <table class="table">
+          <thead><tr><th>#</th><th>Jugador</th><th>Saldo</th><th>Ganadas</th><th>Beneficio</th></tr></thead>
+          <tbody>
+            ${r
+              .map((p, i) => {
+                const me = p.id === state.user.id;
+                return `<tr style="${me ? 'background:rgba(56,224,123,0.07)' : ''}">
+                  <td class="num" style="font-size:17px;width:46px">${medals[i] || `<span class="muted">${i + 1}</span>`}</td>
+                  <td><div style="display:flex;align-items:center;gap:10px">
+                    <div class="avatar" style="background:${avatarColor(p.username)};width:30px;height:30px;font-size:12px">${initials(p.username)}</div>
+                    <span style="font-weight:600">${esc(p.username)}${me ? ' <span class="tiny muted">(tú)</span>' : ''}</span>
+                  </div></td>
+                  <td class="num pos" style="font-size:15px">${fmt(p.chips)} 🪙</td>
+                  <td class="num">${p.wonCount}</td>
+                  <td class="num ${p.profit >= 0 ? 'pos' : 'neg'}">${p.profit >= 0 ? '+' : ''}${fmt(p.profit)}</td>
+                </tr>`;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+      ${leader ? `<p class="center mt muted">👑 Líder actual: <b style="color:var(--gold)">${esc(leader.username)}</b> con ${fmt(leader.chips)} 🪙</p>` : ''}
+      <p class="tiny muted center">El saldo de la casa no cuenta en la clasificación.</p>`
+        : `<div class="empty"><div class="big">🏆</div>Aún no hay jugadores en el ranking.</div>`
+    }`;
+}
+
+/* ---------------------- Vista: apuestas ganadas ------------------ */
+function renderWins(root) {
+  const w = state.wins;
+  const totalPaid = w.reduce((a, x) => a + x.payout, 0);
+  root.innerHTML = `
+    <div class="section-title">Apuestas ganadas</div>
+    ${
+      w.length
+        ? `<div class="card card-pad" style="display:flex;gap:28px;flex-wrap:wrap;margin-bottom:20px">
+            <div><div class="muted tiny">Total de apuestas ganadas</div><div class="num" style="font-size:24px;color:var(--accent)">${w.length}</div></div>
+            <div><div class="muted tiny">Fichas repartidas</div><div class="num" style="font-size:24px;color:var(--gold)">${fmt(totalPaid)} 🪙</div></div>
+          </div>
+          ${w.map(winCardHTML).join('')}`
+        : `<div class="empty"><div class="big">🎉</div>Todavía no hay ninguna apuesta ganada.<br/>¡Que empiece la suerte!</div>`
+    }`;
+}
+
+function winCardHTML(w) {
+  const combo = w.selections.length > 1;
+  return `
+    <div class="wager">
+      <div class="wager-head">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="avatar" style="background:${avatarColor(w.username)};width:32px;height:32px;font-size:12px">${initials(w.username)}</div>
+          <div>
+            <div style="font-weight:600">${esc(w.username)}</div>
+            <div class="tiny muted">${combo ? `Combinada ×${w.selections.length}` : 'Apuesta simple'}</div>
+          </div>
+        </div>
+        <span class="status-badge st-settled">Ganada ✓</span>
+      </div>
+      ${w.selections
+        .map(
+          (s) => `
+        <div class="wager-leg">
+          <span><span class="leg-dot dot-won"></span>${esc(s.betTitle)} · <b style="color:var(--text)">${esc(s.optionLabel)}</b></span>
+          <span class="num">×${s.odds}</span>
+        </div>`
+        )
+        .join('')}
+      <div class="wager-foot">
+        <span class="muted">Apostó <b class="num" style="color:var(--text)">${fmt(w.stake)}</b> · Cuota <b class="num" style="color:var(--gold)">×${fmt(w.totalOdds)}</b></span>
+        <span><b class="pos num">+${fmt(w.payout)} 🪙</b></span>
+      </div>
+    </div>`;
 }
 
 /* ----------------------------- Init ------------------------------ */
