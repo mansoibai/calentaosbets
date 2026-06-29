@@ -95,5 +95,6 @@ git push -u origin main
 Por defecto el disco de Railway es efímero (se reinicia en cada despliegue). Para
 conservar usuarios, fichas e historial:
 - En el servicio: **Settings → Volumes → Add Volume**, móntalo en `/data`.
-- Añade la variable `DATA_DIR=/data` *(soporte opcional; pídelo y lo activo en el código)*.
+- Añade la variable `DATA_DIR=/data`. El servidor guardará ahí `data.json` y los datos
+  persistirán entre reinicios y despliegues.
 

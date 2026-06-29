@@ -6,7 +6,15 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_FILE = path.join(__dirname, 'data.json');
+// DATA_DIR permite guardar los datos en un volumen persistente (ej. /data en Railway).
+// Si no se define, se usa la carpeta del proyecto (desarrollo local).
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch {
+  /* la carpeta ya existe */
+}
 
 const defaultData = () => ({
   meta: {
