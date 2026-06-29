@@ -94,6 +94,10 @@ function emitAdmins() {
 function emitFeed() {
   io.emit('feed:changed');
 }
+// Notifica a TODOS que el registro de la noche (MVP, cubatas...) cambió
+function emitNight() {
+  io.emit('night:changed');
+}
 
 /* ------------------------------ Auth API ------------------------------ */
 
@@ -445,6 +449,76 @@ app.get('/api/wins', auth, (req, res) => {
     .sort((a, b) => new Date(b.settledAt || b.createdAt) - new Date(a.settledAt || a.createdAt))
     .map((w) => ({ ...publicWager(w), username: findUser(w.userId)?.username || '?' }));
   res.json({ wins });
+});
+
+/* --------------- Registro de la noche (MVP, cubatas...) --------------- */
+// Sección independiente de las apuestas: contadores divertidos por jugador.
+const NIGHT_CATEGORIES = [
+  { key: 'mvp', label: 'MVP', emoji: '⭐', adminOnly: true, drink: false },
+  { key: 'cubatas', label: 'Cubatas', emoji: '🍹', adminOnly: false, drink: true },
+  { key: 'chupitos', label: 'Chupitos', emoji: '🥃', adminOnly: false, drink: true },
+  { key: 'cervezas', label: 'Cervezas', emoji: '🍺', adminOnly: false, drink: true },
+];
+
+// Garantiza que el usuario tenga el objeto de stats con todas las categorías
+function ensureNight(u) {
+  if (!u.nightStats || typeof u.nightStats !== 'object') u.nightStats = {};
+  for (const c of NIGHT_CATEGORIES)
+    if (typeof u.nightStats[c.key] !== 'number') u.nightStats[c.key] = 0;
+  return u.nightStats;
+}
+
+// Ranking de la noche (jugadores, sin admin), ordenado por copas totales y MVP.
+app.get('/api/night', auth, (req, res) => {
+  const players = db.data.users
+    .filter((u) => u.role !== 'admin')
+    .map((u) => {
+      const st = ensureNight(u);
+      const drinks = NIGHT_CATEGORIES.filter((c) => c.drink).reduce(
+        (a, c) => a + (st[c.key] || 0),
+        0
+      );
+      return { id: u.id, username: u.username, stats: { ...st }, drinks };
+    })
+    .sort((a, b) => b.drinks - a.drinks || (b.stats.mvp || 0) - (a.stats.mvp || 0));
+  res.json({ categories: NIGHT_CATEGORIES, players });
+});
+
+// Sumar/restar 1 a un contador. Cada uno edita lo suyo; el MVP solo lo da la casa.
+app.post('/api/night/:id/:cat', auth, (req, res) => {
+  const cat = NIGHT_CATEGORIES.find((c) => c.key === req.params.cat);
+  if (!cat) return res.status(400).json({ error: 'Categoría inválida' });
+  const target = findUser(req.params.id);
+  if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+  if (target.role === 'admin')
+    return res.status(400).json({ error: 'La casa no entra en el registro de la noche' });
+
+  const isAdmin = req.user.role === 'admin';
+  if (cat.adminOnly && !isAdmin)
+    return res.status(403).json({ error: `Solo la casa puede dar ${cat.label}` });
+  if (!cat.adminOnly && !isAdmin && req.user.id !== target.id)
+    return res.status(403).json({ error: 'Solo puedes editar tus propios contadores' });
+
+  const delta = Number(req.body.delta);
+  if (delta !== 1 && delta !== -1) return res.status(400).json({ error: 'Cambio inválido' });
+
+  const st = ensureNight(target);
+  st[cat.key] = Math.max(0, (st[cat.key] || 0) + delta);
+  db.persist();
+  emitNight();
+  res.json({ ok: true });
+});
+
+// La casa reinicia la noche (pone todos los contadores a 0)
+app.post('/api/night/reset', auth, adminOnly, (req, res) => {
+  for (const u of db.data.users)
+    if (u.role !== 'admin') {
+      u.nightStats = {};
+      ensureNight(u);
+    }
+  db.persist();
+  emitNight();
+  res.json({ ok: true });
 });
 
 /* ------------------------- Liquidación de apuestas -------------------- */

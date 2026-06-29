@@ -15,6 +15,8 @@ const state = {
   players: [],
   ranking: [],
   wins: [],
+  night: [],
+  nightCategories: [],
   slip: [], // [{betId, optionId, betTitle, optionLabel, odds}]
   stake: '',
   authMode: 'login', // login | register
@@ -103,6 +105,8 @@ function connectSocket() {
     loadRanking();
     loadWins();
   });
+  // Registro de la noche (MVP, cubatas...) cambia para todos
+  socket.on('night:changed', () => loadNight());
 }
 
 /* --------------------------- Carga datos ------------------------- */
@@ -161,6 +165,14 @@ async function loadWins() {
     render();
   } catch {}
 }
+async function loadNight() {
+  try {
+    const { players, categories } = await api('/night');
+    state.night = players;
+    state.nightCategories = categories;
+    render();
+  } catch {}
+}
 
 async function bootstrap() {
   if (!state.token) {
@@ -173,7 +185,7 @@ async function bootstrap() {
     state.user = user;
     state.loading = false;
     connectSocket();
-    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins()]);
+    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins(), loadNight()]);
     if (user.role === 'admin') await Promise.all([loadPlayers(), loadAllWagers()]);
     render();
   } catch {
@@ -199,7 +211,7 @@ async function handleAuth(e) {
     localStorage.setItem('gb_token', token);
     state.view = user.role === 'admin' ? 'manage' : 'bets';
     connectSocket();
-    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins()]);
+    await Promise.all([loadBets(), loadMyWagers(), loadRanking(), loadWins(), loadNight()]);
     if (user.role === 'admin') await Promise.all([loadPlayers(), loadAllWagers()]);
     toast(`¡Bienvenido, ${user.username}!`, user.role === 'admin' ? 'gold' : '');
     render();
@@ -471,6 +483,7 @@ function renderApp() {
         ['players', 'Jugadores', state.players.length],
         ['ranking', 'Ranking', state.ranking.length],
         ['wins', 'Ganadas', state.wins.length],
+        ['night', '🌙 La noche', null],
         ['bets', 'Apuestas', null],
         ['mybets', 'Mis apuestas', state.myWagers.length],
       ]
@@ -479,6 +492,7 @@ function renderApp() {
         ['mybets', 'Mis apuestas', state.myWagers.length],
         ['ranking', 'Ranking', state.ranking.length],
         ['wins', 'Ganadas', state.wins.length],
+        ['night', '🌙 La noche', null],
       ];
 
   $app.innerHTML = `
@@ -527,6 +541,7 @@ function renderApp() {
   else if (state.view === 'players') renderPlayers(view);
   else if (state.view === 'ranking') renderRanking(view);
   else if (state.view === 'wins') renderWins(view);
+  else if (state.view === 'night') renderNight(view);
 }
 
 /* --------------------- Vista: apostar (jugador) ------------------ */
@@ -1161,6 +1176,108 @@ function winCardHTML(w) {
       <div class="wager-foot">
         <span class="muted">Apostó <b class="num" style="color:var(--text)">${fmt(w.stake)}</b> · Cuota <b class="num" style="color:var(--gold)">×${fmt(w.totalOdds)}</b></span>
         <span><b class="pos num">+${fmt(w.payout)} 🪙</b></span>
+      </div>
+    </div>`;
+}
+
+/* ---------------------- Vista: la noche (MVP/cubatas) ------------ */
+async function adjustNight(id, cat, delta) {
+  try {
+    await api(`/night/${id}/${cat}`, { method: 'POST', body: { delta } });
+    loadNight(); // el socket también refresca a todos
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+async function resetNight() {
+  try {
+    await api('/night/reset', { method: 'POST' });
+    toast('Noche reiniciada · contadores a 0', 'gold');
+    loadNight();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function renderNight(root) {
+  const isAdmin = state.user.role === 'admin';
+  const players = state.night;
+  const topMvp = players.reduce((m, x) => Math.max(m, x.stats.mvp || 0), 0);
+  const topDrinks = players.reduce((m, x) => Math.max(m, x.drinks || 0), 0);
+
+  root.innerHTML = `
+    <div class="section-title">🌙 MVPs de la noche</div>
+    <div class="card card-pad tiny muted" style="margin-bottom:16px;line-height:1.6">
+      Registro de la noche, aparte de las apuestas: lleva la cuenta de 🍹 cubatas, 🥃 chupitos,
+      🍺 cervezas y ⭐ MVP. Cada jugador edita sus propios contadores;
+      ${isAdmin ? 'tú, como casa, puedes editar a cualquiera y repartir los ⭐ MVP.' : 'el ⭐ MVP lo reparte la casa.'}
+      La casa no entra en el ranking.
+    </div>
+    ${
+      isAdmin
+        ? `<button class="btn btn-sm btn-danger" id="reset-night" style="margin-bottom:16px">🔄 Reiniciar la noche (todo a 0)</button>`
+        : ''
+    }
+    ${
+      players.length
+        ? players.map((p, i) => nightCardHTML(p, i, { topMvp, topDrinks })).join('')
+        : `<div class="empty"><div class="big">🌙</div>No hay jugadores registrados todavía.</div>`
+    }`;
+
+  root.querySelectorAll('[data-night]').forEach((b) =>
+    b.addEventListener('click', () =>
+      adjustNight(b.dataset.night, b.dataset.cat, Number(b.dataset.delta))
+    )
+  );
+  const rn = root.querySelector('#reset-night');
+  if (rn)
+    rn.addEventListener('click', () => {
+      if (confirm('¿Reiniciar todos los contadores de la noche a 0?')) resetNight();
+    });
+}
+
+function nightCardHTML(p, idx, { topMvp, topDrinks }) {
+  const isAdmin = state.user.role === 'admin';
+  const me = state.user.id;
+  const cats = state.nightCategories;
+  const medal = ['🥇', '🥈', '🥉'][idx] || `${idx + 1}.`;
+  const isMvpKing = (p.stats.mvp || 0) > 0 && (p.stats.mvp || 0) === topMvp;
+  const isDrinkKing = (p.drinks || 0) > 0 && (p.drinks || 0) === topDrinks;
+  return `
+    <div class="card card-pad" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <span class="num" style="font-size:18px;width:34px">${medal}</span>
+        <div class="avatar" style="background:${avatarColor(p.username)}">${initials(p.username)}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:16px">
+            ${esc(p.username)} ${isMvpKing ? '👑' : ''} ${isDrinkKing ? '🍹' : ''}
+            ${p.id === me ? '<span class="tiny muted">(tú)</span>' : ''}
+          </div>
+          <div class="tiny muted">${p.drinks} copas en total${p.stats.mvp ? ` · ⭐ ${p.stats.mvp} MVP` : ''}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+        ${cats
+          .map((c) => {
+            const canEdit = (!c.adminOnly && (isAdmin || p.id === me)) || (c.adminOnly && isAdmin);
+            const val = p.stats[c.key] || 0;
+            return `
+            <div class="option" style="cursor:default;flex-direction:column;align-items:stretch;gap:8px">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span class="ol">${c.emoji} ${esc(c.label)}</span>
+                <span class="num" style="font-size:18px;color:${c.adminOnly ? 'var(--gold)' : 'var(--accent)'}">${val}</span>
+              </div>
+              ${
+                canEdit
+                  ? `<div style="display:flex;gap:6px">
+                      <button class="btn btn-sm" style="flex:1" data-night="${p.id}" data-cat="${c.key}" data-delta="-1">−</button>
+                      <button class="btn btn-sm" style="flex:1" data-night="${p.id}" data-cat="${c.key}" data-delta="1">+</button>
+                    </div>`
+                  : `<div class="tiny muted center">${c.adminOnly ? 'solo la casa' : 'solo cada uno'}</div>`
+              }
+            </div>`;
+          })
+          .join('')}
       </div>
     </div>`;
 }
