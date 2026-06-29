@@ -1,0 +1,13 @@
+# Dependencias
+node_modules/
+
+# Datos en runtime (contienen el secreto JWT y hashes de contraseñas: NO subir)
+data.json
+data.json.tmp
+
+# Logs y temporales
+*.log
+.DS_Store
+
+# Variables de entorno locales
+.env
