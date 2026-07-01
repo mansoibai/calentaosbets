@@ -623,7 +623,11 @@ function renderApp() {
 
 /* --------------------- Vista: apostar (jugador) ------------------ */
 function renderBetsView(root) {
-  const open = state.bets.filter((b) => b.status === 'open');
+  // Las apuestas flash ("del momento") se fijan arriba; dentro de cada grupo se
+  // mantiene el orden por recencia que ya trae el backend (sort estable).
+  const open = state.bets
+    .filter((b) => b.status === 'open')
+    .sort((a, b) => (b.flash ? 1 : 0) - (a.flash ? 1 : 0));
   root.innerHTML = `
     <div class="layout">
       <div class="bets-col">
@@ -648,7 +652,8 @@ function betCardHTML(bet) {
   const totalStaked = Object.values(bet.stats.totals || {}).reduce((a, b) => a + b, 0);
   const winners = bet.winningOptionIds || [];
   return `
-    <div class="card bet-card" data-bet="${bet.id}">
+    <div class="card bet-card${bet.flash ? ' flash' : ''}" data-bet="${bet.id}">
+      ${bet.flash ? `<div class="flash-banner">⚡ Flash · del momento</div>` : ''}
       <div class="bet-head">
         <div>
           <h3 class="bet-title">${esc(bet.title)}</h3>
@@ -848,6 +853,7 @@ const newBetDraft = {
   description: '',
   closesAt: '',
   multi: false,
+  flash: false,
   options: [
     { label: '', odds: '2.0' },
     { label: '', odds: '2.0' },
@@ -883,9 +889,13 @@ function renderNewBet(root) {
             <div id="opt-list"></div>
             <button class="btn btn-sm btn-ghost" id="add-opt">+ Añadir opción</button>
           </div>
-          <label class="house-toggle" style="margin:2px 0 14px">
+          <label class="house-toggle" style="margin:2px 0 10px">
             <input type="checkbox" id="b-multi" ${newBetDraft.multi ? 'checked' : ''} />
             <span>🎯 Permitir elegir <b style="color:var(--gold)">&nbsp;varias opciones&nbsp;</b> del mismo evento (las cuotas se multiplican; al liquidar podrás marcar varias ganadoras)</span>
+          </label>
+          <label class="house-toggle" style="margin:2px 0 14px">
+            <input type="checkbox" id="b-flash" ${newBetDraft.flash ? 'checked' : ''} />
+            <span>⚡ Apuesta <b style="color:var(--gold)">&nbsp;flash&nbsp;</b> (del momento): sale destacada y fijada arriba del mercado</span>
           </label>
           <button class="btn btn-primary mt" id="create-bet">Publicar apuesta</button>
         </div>
@@ -938,6 +948,7 @@ function renderNewBet(root) {
       description: newBetDraft.description,
       status: 'open',
       multi: newBetDraft.multi,
+      flash: newBetDraft.flash,
       closesAt: newBetDraft.closesAt ? new Date(newBetDraft.closesAt).toISOString() : null,
       winningOptionIds: null,
       options: newBetDraft.options
@@ -965,6 +976,10 @@ function renderNewBet(root) {
     newBetDraft.multi = e.target.checked;
     renderPreview();
   });
+  root.querySelector('#b-flash').addEventListener('change', (e) => {
+    newBetDraft.flash = e.target.checked;
+    renderPreview();
+  });
   root.querySelector('#add-opt').addEventListener('click', () => {
     newBetDraft.options.push({ label: '', odds: '2.0' });
     renderOpts();
@@ -988,6 +1003,7 @@ function renderNewBet(root) {
       description: newBetDraft.description.trim(),
       type: 'custom',
       multi: newBetDraft.multi,
+      flash: newBetDraft.flash,
       closesAt: newBetDraft.closesAt || null,
       options: newBetDraft.options
         .filter((o) => o.label.trim())
@@ -1000,6 +1016,7 @@ function renderNewBet(root) {
       newBetDraft.description = '';
       newBetDraft.closesAt = '';
       newBetDraft.multi = false;
+      newBetDraft.flash = false;
       newBetDraft.options = [{ label: '', odds: '2.0' }, { label: '', odds: '2.0' }];
       state.view = 'manage';
       render();
@@ -1079,6 +1096,7 @@ function manageCardHTML(bet) {
       <div class="bet-meta">
         <span>🪙 <b>${fmt(totalStaked)}</b> en juego</span>
         <span><b>${bet.stats.count}</b> apuestas</span>
+        ${bet.flash ? `<span class="combo-tag" style="margin:0">⚡ flash</span>` : ''}
         ${bet.multi ? `<span class="combo-tag" style="margin:0">🎯 multi-opción</span>` : ''}
         ${winLabel ? `<span style="color:var(--accent)">✓ Ganó: <b>${winLabel}</b></span>` : ''}
         ${bet.closesAt && bet.status === 'open' ? `<span>⏱ ${timeLeft(bet.closesAt)}</span>` : ''}

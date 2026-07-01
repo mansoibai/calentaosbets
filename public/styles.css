@@ -287,6 +287,43 @@ h3 {
   color: var(--red);
 }
 
+/* Apuestas flash ("del momento"): destacadas y fijadas arriba del mercado */
+.bet-card.flash {
+  overflow: hidden;
+  border-color: rgba(255, 207, 74, 0.55);
+  animation: flashPulse 2.6s ease-in-out infinite;
+}
+.bet-card.flash .bet-title {
+  color: var(--gold);
+}
+.flash-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent-ink);
+  background: linear-gradient(135deg, var(--gold), #ffb020);
+  padding: 6px 16px;
+}
+@keyframes flashPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(255, 207, 74, 0.45), 0 10px 30px -16px rgba(255, 207, 74, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(255, 207, 74, 0.9), 0 16px 40px -12px rgba(255, 207, 74, 0.7);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bet-card.flash {
+    animation: none;
+    box-shadow: 0 0 0 1px rgba(255, 207, 74, 0.7);
+  }
+}
+
 .options {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

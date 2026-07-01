@@ -222,6 +222,7 @@ app.post('/api/bets', auth, adminOnly, (req, res) => {
     description,
     type,
     multi: !!req.body.multi, // permite elegir varias opciones del mismo evento (se multiplican)
+    flash: !!req.body.flash, // apuesta "del momento": sale destacada y fijada arriba del mercado
     options,
     status: 'open',
     closesAt,
