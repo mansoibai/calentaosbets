@@ -405,6 +405,69 @@ function chipsModal(player) {
   });
 }
 
+/* --------------------- Copia de seguridad ------------------------ */
+// Exporta todos los datos a un archivo .json que se descarga en el navegador.
+async function exportBackup() {
+  try {
+    const data = await api('/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `calentaosbets-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('Copia exportada · guárdala en lugar seguro', 'gold');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+// Lee un archivo de copia y lo restaura (reemplaza todos los datos).
+async function importBackup(file, houseCode) {
+  if (!file) return toast('Elige un archivo de copia', 'error');
+  if (!houseCode) return toast('Introduce el código de la casa', 'error');
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return toast('El archivo no es un JSON válido', 'error');
+  }
+  try {
+    await api('/import', { method: 'POST', body: { houseCode, data } });
+    toast('¡Copia restaurada! Recargando…', 'gold');
+    setTimeout(() => location.reload(), 900);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+// Modal de restauración para el panel de admin (ya logueado).
+function importModal() {
+  const m = openModal(`
+    <h3>Restaurar copia de seguridad</h3>
+    <p class="tiny muted">Se reemplazarán <b>todos</b> los datos actuales por los del archivo. Úsalo para recuperar el contenido tras actualizar la app.</p>
+    <div class="field mt"><label>Archivo de copia (.json)</label>
+      <input class="input" id="imp-file" type="file" accept="application/json,.json" /></div>
+    <div class="field"><label>Código de la casa</label>
+      <input class="input" id="imp-code" placeholder="Código secreto de admin" /></div>
+    <div class="row">
+      <button class="btn btn-ghost" data-cancel>Cancelar</button>
+      <button class="btn btn-primary" data-confirm style="width:auto">Restaurar</button>
+    </div>
+  `);
+  m.querySelector('[data-cancel]').addEventListener('click', closeModal);
+  m.querySelector('[data-confirm]').addEventListener('click', () => {
+    const file = m.querySelector('#imp-file').files[0];
+    const code = m.querySelector('#imp-code').value.trim();
+    closeModal();
+    importBackup(file, code);
+  });
+}
+
 /* ============================ RENDER ============================= */
 function render() {
   if (state.loading) {
@@ -456,6 +519,15 @@ function renderAuth() {
           <button id="switch-auth">${isLogin ? 'Regístrate' : 'Inicia sesión'}</button>
         </div>
         <p class="center tiny muted mt">El primer usuario en registrarse se convierte en la casa automáticamente.</p>
+        <details class="card card-pad" style="margin-top:14px">
+          <summary style="cursor:pointer;font-weight:600">💾 Restaurar copia de seguridad</summary>
+          <p class="tiny muted mt">¿Acabas de actualizar la app y está vacía? Sube tu archivo de copia y recupera todo el contenido. Necesitas el código de la casa.</p>
+          <div class="field mt"><label>Archivo de copia (.json)</label>
+            <input class="input" id="restore-file" type="file" accept="application/json,.json" /></div>
+          <div class="field"><label>Código de la casa</label>
+            <input class="input" id="restore-code" placeholder="Código secreto de admin" /></div>
+          <button class="btn btn-primary" id="restore-btn">Restaurar todo</button>
+        </details>
       </div>
     </div>`;
 
@@ -469,6 +541,11 @@ function renderAuth() {
     wh.addEventListener('change', () => {
       document.getElementById('house-field').classList.toggle('hidden', !wh.checked);
     });
+  document.getElementById('restore-btn').addEventListener('click', () => {
+    const file = document.getElementById('restore-file').files[0];
+    const code = document.getElementById('restore-code').value.trim();
+    importBackup(file, code);
+  });
 }
 
 /* ------------------------------ App view ------------------------- */
@@ -1086,6 +1163,17 @@ function renderPlayers(root) {
               .join('')
           : `<div class="center muted" style="padding:20px">Sin apuestas todavía.</div>`
       }
+    </div>
+    <div class="section-title">Copia de seguridad</div>
+    <div class="card card-pad">
+      <p class="tiny muted" style="margin-top:0;line-height:1.6">
+        Exporta una copia <b>antes de actualizar la app</b> y restáurala después para no perder nada.
+        El archivo contiene datos sensibles (contraseñas cifradas): guárdalo en privado.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="export-backup" style="width:auto">⬇️ Exportar copia</button>
+        <button class="btn btn-ghost" id="import-backup" style="width:auto">⬆️ Restaurar copia…</button>
+      </div>
     </div>`;
 
   root.querySelectorAll('[data-chips]').forEach((b) =>
@@ -1094,6 +1182,8 @@ function renderPlayers(root) {
       chipsModal(p);
     })
   );
+  root.querySelector('#export-backup').addEventListener('click', exportBackup);
+  root.querySelector('#import-backup').addEventListener('click', importModal);
 }
 
 /* ---------------------- Vista: ranking --------------------------- */
@@ -1148,10 +1238,26 @@ function renderWins(root) {
           ${w.map(winCardHTML).join('')}`
         : `<div class="empty"><div class="big">🎉</div>Todavía no hay ninguna apuesta ganada.<br/>¡Que empiece la suerte!</div>`
     }`;
+
+  root.querySelectorAll('[data-void]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const win = state.wins.find((x) => x.id === b.dataset.void);
+      if (
+        confirm(
+          `¿Anular esta apuesta ganada de ${win?.username || 'este jugador'}?\n\n` +
+            `Se le quitarán las ganancias y se le devolverá solo lo apostado (${fmt(win?.stake || 0)} 🪙).`
+        )
+      ) {
+        await adminAction(`/wagers/${b.dataset.void}/void`, 'PATCH');
+        toast('Apuesta anulada · importe devuelto al jugador', 'gold');
+      }
+    })
+  );
 }
 
 function winCardHTML(w) {
   const combo = w.selections.length > 1;
+  const isAdmin = state.user?.role === 'admin';
   return `
     <div class="wager">
       <div class="wager-head">
@@ -1177,6 +1283,13 @@ function winCardHTML(w) {
         <span class="muted">Apostó <b class="num" style="color:var(--text)">${fmt(w.stake)}</b> · Cuota <b class="num" style="color:var(--gold)">×${fmt(w.totalOdds)}</b></span>
         <span><b class="pos num">+${fmt(w.payout)} 🪙</b></span>
       </div>
+      ${
+        isAdmin
+          ? `<div style="padding:0 18px 16px">
+              <button class="btn btn-sm btn-danger" data-void="${w.id}">🚫 Anular (trampa) · devolver ${fmt(w.stake)} 🪙</button>
+            </div>`
+          : ''
+      }
     </div>`;
 }
 

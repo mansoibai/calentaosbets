@@ -9,13 +9,17 @@ import { db } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
-const SECRET = db.data.meta.jwtSecret;
+// El secreto de sesión se lee SIEMPRE desde los datos (no se captura una sola vez).
+// Así, al restaurar una copia de seguridad, los tokens antiguos siguen siendo
+// válidos y nadie tiene que volver a iniciar sesión.
+const jwtSecret = () => db.data.meta.jwtSecret;
 
 const app = express();
 const server = http.createServer(app);
 const io = new SocketServer(server);
 
-app.use(express.json());
+// Límite amplio: una copia de seguridad completa puede superar los 100 KB por defecto.
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ----------------------------- Utilidades ----------------------------- */
@@ -38,7 +42,7 @@ function findUser(id) {
 }
 
 function signToken(user) {
-  return jwt.sign({ id: user.id }, SECRET, { expiresIn: '30d' });
+  return jwt.sign({ id: user.id }, jwtSecret(), { expiresIn: '30d' });
 }
 
 // Middleware de autenticación
@@ -47,7 +51,7 @@ function auth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'No autenticado' });
   try {
-    const payload = jwt.verify(token, SECRET);
+    const payload = jwt.verify(token, jwtSecret());
     const user = findUser(payload.id);
     if (!user) return res.status(401).json({ error: 'Usuario no encontrado' });
     req.user = user;
@@ -68,7 +72,7 @@ function adminOnly(req, res, next) {
 io.on('connection', (socket) => {
   socket.on('auth', (token) => {
     try {
-      const payload = jwt.verify(token, SECRET);
+      const payload = jwt.verify(token, jwtSecret());
       socket.join(`user:${payload.id}`);
       const user = findUser(payload.id);
       if (user?.role === 'admin') socket.join('admins');
@@ -312,12 +316,16 @@ app.delete('/api/bets/:id', auth, adminOnly, (req, res) => {
 /* ----------------------------- Wagers API ----------------------------- */
 
 function publicWager(w) {
+  // Apuesta anulada manualmente por la casa (p.ej. trampa): patas anuladas y cuota 1.
+  const adminVoid = w.status === 'void' && w.voidedByAdmin;
   // Enriquecemos con info legible de cada selección
   const selections = w.selections.map((s) => {
     const bet = db.data.bets.find((b) => b.id === s.betId);
     const option = bet?.options.find((o) => o.id === s.optionId);
     let legStatus = 'pending';
-    if (bet) {
+    if (adminVoid) {
+      legStatus = 'void';
+    } else if (bet) {
       if (bet.status === 'cancelled') legStatus = 'void';
       else if (bet.status === 'settled')
         legStatus = optionIsWinner(bet, s.optionId) ? 'won' : 'lost';
@@ -331,7 +339,7 @@ function publicWager(w) {
       legStatus,
     };
   });
-  return { ...w, selections, totalOdds: round2(combinedOdds(w)) };
+  return { ...w, selections, totalOdds: adminVoid ? 1 : round2(combinedOdds(w)) };
 }
 
 function combinedOdds(w) {
@@ -449,6 +457,31 @@ app.get('/api/wins', auth, (req, res) => {
     .sort((a, b) => new Date(b.settledAt || b.createdAt) - new Date(a.settledAt || a.createdAt))
     .map((w) => ({ ...publicWager(w), username: findUser(w.userId)?.username || '?' }));
   res.json({ wins });
+});
+
+// La casa anula una apuesta YA GANADA (p.ej. si detecta trampas).
+// Se le quitan las ganancias al jugador y se le devuelve SOLO el importe apostado
+// (cuota efectiva 1). El ticket queda como "anulado por la casa".
+app.patch('/api/wagers/:id/void', auth, adminOnly, (req, res) => {
+  const w = db.data.wagers.find((x) => x.id === req.params.id);
+  if (!w) return res.status(404).json({ error: 'Apuesta no encontrada' });
+  if (w.status !== 'won')
+    return res.status(400).json({ error: 'Solo se pueden anular apuestas ya ganadas' });
+
+  const user = findUser(w.userId);
+  if (user) {
+    // Deshace el pago de la ganancia y reembolsa el importe apostado.
+    user.chips = round2(Math.max(0, user.chips - w.payout + w.stake));
+    emitUser(user.id);
+  }
+  w.status = 'void';
+  w.payout = round2(w.stake); // reembolso íntegro del importe apostado
+  w.voidedByAdmin = true;
+  w.settledAt = new Date().toISOString();
+  db.persist();
+  emitAdmins();
+  emitFeed();
+  res.json({ wager: publicWager(w) });
 });
 
 /* --------------- Registro de la noche (MVP, cubatas...) --------------- */
@@ -598,6 +631,44 @@ app.post('/api/users/:id/chips', auth, adminOnly, (req, res) => {
   emitAdmins();
   emitFeed();
   res.json({ user: publicUser(user) });
+});
+
+/* ----------------------- Copia de seguridad --------------------------- */
+
+// Exportar: descarga TODOS los datos (usuarios con su hash, apuestas, saldos,
+// historial y registro de la noche). Solo la casa. Es un archivo sensible.
+app.get('/api/export', auth, adminOnly, (req, res) => {
+  res.json(db.data);
+});
+
+// Importar: reemplaza TODOS los datos por los de una copia. No requiere sesión
+// (así funciona tras un despliegue, cuando la app está vacía); se autoriza con
+// el código de la casa. Nadie pierde nada: se restaura todo tal cual.
+app.post('/api/import', (req, res) => {
+  const houseCode = String(req.body.houseCode || '').trim();
+  const incoming = req.body.data;
+
+  if (houseCode !== db.data.meta.houseCode)
+    return res.status(403).json({ error: 'Código de la casa incorrecto' });
+
+  const valid =
+    incoming &&
+    typeof incoming === 'object' &&
+    incoming.meta &&
+    typeof incoming.meta === 'object' &&
+    Array.isArray(incoming.users) &&
+    Array.isArray(incoming.bets) &&
+    Array.isArray(incoming.wagers);
+  if (!valid)
+    return res.status(400).json({ error: 'El archivo de copia no es válido' });
+
+  db.replaceAll(incoming);
+  // Avisa a todos los clientes conectados para que recarguen todo.
+  emitBets();
+  emitFeed();
+  emitNight();
+  io.emit('admin:changed');
+  res.json({ ok: true, users: db.data.users.length, bets: db.data.bets.length });
 });
 
 /* ------------------------------- Arranque ----------------------------- */

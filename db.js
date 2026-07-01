@@ -63,6 +63,22 @@ function persist() {
   saveTimer = setTimeout(save, 50);
 }
 
+// Reemplaza TODOS los datos (usado al importar una copia de seguridad).
+// Mantiene el secreto de sesión y el código de la casa del archivo para que
+// nadie pierda su sesión ni su cuenta; las variables de entorno siguen mandando.
+function replaceAll(incoming) {
+  const d = defaultData();
+  data = {
+    meta: { ...d.meta, ...(incoming.meta || {}) },
+    users: Array.isArray(incoming.users) ? incoming.users : [],
+    bets: Array.isArray(incoming.bets) ? incoming.bets : [],
+    wagers: Array.isArray(incoming.wagers) ? incoming.wagers : [],
+  };
+  if (process.env.JWT_SECRET) data.meta.jwtSecret = process.env.JWT_SECRET;
+  if (process.env.HOUSE_CODE) data.meta.houseCode = process.env.HOUSE_CODE;
+  save();
+}
+
 load();
 
 export const db = {
@@ -71,5 +87,6 @@ export const db = {
   },
   persist,
   saveNow: save,
+  replaceAll,
   id: () => crypto.randomUUID(),
 };
